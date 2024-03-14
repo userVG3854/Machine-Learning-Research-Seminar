@@ -100,3 +100,4 @@ class DiffusionTransformer(nn.Module):
             src = layer(src)
         output = self.final_layer(src)
         return output
+
