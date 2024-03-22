@@ -34,7 +34,7 @@ def reverse_diffusion_process(model, y_test, noise_predictions):
             # Compute the mean and variance for the current timestep
             sqrt_alpha = model.ddpm.sqrt_alphas_cumprod[t]
             sqrt_one_minus_alpha = model.ddpm.sqrt_one_minus_alphas_cumprod[t]
-            posterior_mean = (sqrt_alpha * (y_test - sqrt_one_minus_alpha * noise_pred)) / (sqrt_alpha**2 + sqrt_one_minus_alpha**2)
+            posterior_mean = (sqrt_alpha * (y_pred - sqrt_one_minus_alpha * noise_pred)) / (sqrt_alpha**2 + sqrt_one_minus_alpha**2)
             posterior_variance = model.ddpm.q_posterior_variance(torch.tensor([t]).to(y_test.device))
 
             # Sample from the posterior distribution
