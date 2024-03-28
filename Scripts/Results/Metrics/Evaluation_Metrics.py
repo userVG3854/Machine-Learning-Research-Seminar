@@ -5,28 +5,36 @@ import torch.nn as nn
 import time
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-def min_ade20(pred_trajs, gt_trajs):
+
+def min_ade20(pred_trajs, gt_trajs, x_col=3, y_col=4):
     """Compute minimum average displacement error over the top 20 predicted trajectories."""
     ade_list = []
-    for pred_traj in pred_trajs:
-        ade = np.sqrt(np.mean(np.square(pred_traj - gt_trajs)))
-        ade_list.append(ade)
-    ade_list.sort()
-    return np.mean(ade_list[:20])
+    for i in range(gt_trajs.shape[1]):  # Loop over all players
+        errors = []
+        for pred_traj in pred_trajs:
+            ade = np.mean(np.sqrt(np.square(pred_traj[:, i, x_col] - gt_trajs[:, i, x_col]) + np.square(pred_traj[:, i, y_col] - gt_trajs[:, i, y_col])))
+            errors.append(ade)
+        errors.sort()
+        ade_list.append(np.mean(errors[:20]))
+    return np.mean(ade_list)
 
-def min_fde20(pred_trajs, gt_trajs):
+def min_fde20(pred_trajs, gt_trajs, x_col=3, y_col=4):
     """Compute minimum final displacement error over the top 20 predicted trajectories."""
     fde_list = []
-    for pred_traj in pred_trajs:
-        fde = np.sqrt(np.mean(np.square(pred_traj[-1] - gt_trajs[-1])))
-        fde_list.append(fde)
-    fde_list.sort()
-    return np.mean(fde_list[:20])
+    for i in range(gt_trajs.shape[1]):  # Loop over all players
+        errors = []
+        for pred_traj in pred_trajs:
+            fde = np.sqrt(np.square(pred_traj[-1, i, x_col] - gt_trajs[-1, i, x_col]) + np.square(pred_traj[-1, i, y_col] - gt_trajs[-1, i, y_col]))
+            errors.append(fde)
+        errors.sort()
+        fde_list.append(np.mean(errors[:20]))
+    return np.mean(fde_list)
+
 
 
 def reverse_diffusion_process(model, y_test, noise_predictions):
     y_pred = y_test.clone()
-    for t in range(y_test.shape[0]):
+    for t in reversed(range(y_test.shape[0])):  # Reverse the loop to start from the last timestep
         with torch.no_grad():
             # Get the noise prediction for the current timestep
             noise_pred = noise_predictions[t, :, :]
@@ -45,9 +53,24 @@ def reverse_diffusion_process(model, y_test, noise_predictions):
 
 
 
+def reverse_diffusion_process2(model, y_test, noise_predictions):
+    y_pred = y_test.clone()
+    for t in range(y_test.shape[0]):
+        with torch.no_grad():
+            # Get the noise prediction for the current timestep
+            noise_pred = noise_predictions[t, :, :]
 
+            # Compute the mean and variance for the current timestep
+            sqrt_alpha = model.ddpm.sqrt_alphas_cumprod[t]
+            sqrt_one_minus_alpha = model.ddpm.sqrt_one_minus_alphas_cumprod[t]
+            posterior_mean = (sqrt_alpha * (y_pred - sqrt_one_minus_alpha * noise_pred)) / (sqrt_alpha**2 + sqrt_one_minus_alpha**2)
+            posterior_variance = model.ddpm.q_posterior_variance(torch.tensor([t]).to(y_test.device))
 
+            # Sample from the posterior distribution
+            eps = torch.randn_like(y_pred)
+            y_pred = posterior_mean + torch.sqrt(posterior_variance) * eps
 
+    return y_pred
 
 
 

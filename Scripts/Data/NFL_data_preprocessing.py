@@ -29,12 +29,12 @@ def get_team_type(team_data):
     else:
         return 'defensive'
 
-def preprocess_nfl(dataframes, verbose=False):
+def preprocess_nfl2(dataframes, verbose=False):
     preprocessed_dataframes = {}
 
     for df_name, tracking_data in dataframes.items():
         # Feature selection and preprocessing
-        selected_features = ['gameId', 'playId', 'playType', 'frame', 'x', 'y', 's', 'o', 'dir', 'playDirection', 'quarter', 'down', 'yardsToGo', 'displayName', 'teamAbbr', 'position']
+        selected_features = ['gameId','frame', 'x', 'y', 's', 'o', 'dir', 'playDirection', 'displayName', 'teamAbbr', 'position']
         tracking_data = tracking_data[selected_features]
 
         # Drop rows with excess frames based on playerId
@@ -68,10 +68,10 @@ def preprocess_nfl(dataframes, verbose=False):
         tracking_data['playerId'] = 11 * (tracking_data['teamType'] == 'attacking').astype(int) + 12 * (tracking_data['teamType'] == 'defensive').astype(int) + 23 * (tracking_data['teamType'] == 'ball').astype(int) + tracking_data.groupby(['teamType', 'position']).cumcount() + 1
 
         # Convert categorical features to numerical representations
-        tracking_data = pd.get_dummies(tracking_data, columns=['playType', 'playDirection', 'teamType'])
+        tracking_data = pd.get_dummies(tracking_data, columns=['playDirection'])
 
         # Use iterative imputer to handle missing values with emphasis on the temporal context
-        numerical_features = ['x', 'y', 's', 'o', 'dir', 'quarter', 'down', 'yardsToGo']
+        numerical_features = ['x', 'y', 's', 'o', 'dir']
         imputer = IterativeImputer(max_iter=10, random_state=0)  # Adjust parameters as needed
         for group_name, group_df in tracking_data.groupby(['gameId', 'playId']):
             imputed = imputer.fit_transform(group_df[numerical_features])
@@ -91,6 +91,70 @@ def preprocess_nfl(dataframes, verbose=False):
 
     return preprocessed_dataframes
 
+def preprocess_nfl(dataframes, verbose=False):
+    preprocessed_dataframes = {}
+
+    for df_name, tracking_data in dataframes.items():
+        # Feature selection and preprocessing
+        selected_features = ['gameId','frame', 'x', 'y', 's', 'o', 'dir', 'playDirection', 'displayName', 'teamAbbr', 'position']
+        tracking_data = tracking_data[selected_features]
+
+        # Drop rows with excess frames based on playerId
+        frame_counts = tracking_data.groupby('displayName')['frame'].count()
+        if not frame_counts.unique().size == 1:
+            min_frames = frame_counts.min()
+            tracking_data = tracking_data.groupby('displayName').apply(lambda x: x.head(min_frames))
+
+        # Fill missing values for specific columns based on displayName
+        mask = tracking_data['displayName'] == 'ball'
+        tracking_data.loc[mask, 'teamAbbr'] = 'BALL'
+        tracking_data.loc[mask, 'position'] = 'ball'
+        tracking_data.loc[mask, 'o'] = 0
+        tracking_data.loc[mask, 'dir'] = 0
+
+        # Determine team types and sort
+        teams = tracking_data.groupby('teamAbbr')
+        team_types = {team: get_team_type(team_data) for team, team_data in teams}
+        tracking_data['teamType'] = tracking_data['teamAbbr'].map(team_types)
+
+        # Fill NaN values in 'teamType' column
+        tracking_data['teamType'].fillna('ball', inplace=True)
+        team_type_counts = tracking_data['teamType'].value_counts()
+        if verbose:
+            print(f"Count of each team type:\n{team_type_counts}")
+
+        # Create playerId based on teamType and position
+        tracking_data = tracking_data.sort_values(['teamType', 'position'])
+        tracking_data['playerId'] = 11 * (tracking_data['teamType'] == 'attacking').astype(int) + 12 * (tracking_data['teamType'] == 'defensive').astype(int) + 23 * (tracking_data['teamType'] == 'ball').astype(int) + tracking_data.groupby(['teamType', 'position']).cumcount() + 1
+
+        # Move playerId column to the desired location
+        cols = list(tracking_data.columns)
+        cols.insert(cols.index('frame'), cols.pop(cols.index('playerId')))
+        tracking_data = tracking_data[cols]
+
+        # Convert categorical features to numerical representations
+        tracking_data = pd.get_dummies(tracking_data, columns=['playDirection'])
+
+        # Use iterative imputer to handle missing values with emphasis on the temporal context
+        numerical_features = ['x', 'y', 's', 'o', 'dir']
+        imputer = IterativeImputer(max_iter=10, random_state=0)  # Adjust parameters as needed
+        for group_name, group_df in tracking_data.groupby(['gameId', 'frame']):
+            imputed = imputer.fit_transform(group_df[numerical_features])
+            tracking_data.loc[group_df.index, numerical_features] = pd.DataFrame(imputed, columns=numerical_features, index=group_df.index)
+
+        columns_with_nan = tracking_data.columns[tracking_data.isna().any()]
+        if columns_with_nan.any():
+            if verbose:
+                print(f"Columns with NaN values: {columns_with_nan}")
+                print(f"Dropped game with remaining nan values: {df_name}")
+            continue
+        else:
+            # Keep only numerical columns
+            numerical_columns = tracking_data.select_dtypes(include=[np.number]).columns
+            tracking_data = tracking_data[numerical_columns]
+            preprocessed_dataframes[df_name] = tracking_data
+
+    return preprocessed_dataframes
 
 
 
@@ -243,7 +307,237 @@ def prepare_data(dataframes, test_games):
 
 
 
+def normalization2(X_train, Y_train, Y_train_noised, Y_noise_train, X_noise_train, X_test, Y_test, Y_test_noised, Y_noise_test, X_noise_test, Data_train, Data_test):
+    # Initialize the dictionaries for the normalized data
+    X_train_normalized = {}
+    Y_train_normalized = {}
+    Y_train_noised_normalized = {}
+    Y_noise_train_normalized = {}
+    X_noise_train_normalized = {}
+    Data_train_normalized = {}
+    X_test_normalized = {}
+    Y_test_normalized = {}
+    Y_test_noised_normalized = {}
+    Y_noise_test_normalized = {}
+    X_noise_test_normalized = {}
+    Data_test_normalized = {}
+
+    # Initialize the scalers
+    scaler_x = StandardScaler()
+    scaler_y = StandardScaler()
+    scaler_y_noise = StandardScaler()
+    scaler_x_noise = StandardScaler()
+
+    # Normalize the training data
+    for game, x in X_train.items():
+        y = Y_train[game]
+        y_noised = Y_train_noised[game]
+        y_noise = Y_noise_train[game]
+        x_noise = X_noise_train[game]
+        data = Data_train[game]
+
+        # Flatten the tensors along the frame and player dimensions
+        x_flattened = x.view(x.shape[0] * x.shape[1], -1).numpy()
+        y_flattened = y.view(y.shape[0] * y.shape[1], -1).numpy()
+        y_noised_flattened = y_noised.view(y_noised.shape[0] * y_noised.shape[1], -1).numpy()
+        y_noise_flattened = y_noise.view(y_noise.shape[0] * y_noise.shape[1], -1).numpy()
+        x_noise_flattened = x_noise.view(x_noise.shape[0] * x_noise.shape[1], -1).numpy()
+        data_flattened = data.view(data.shape[0]*data.shape[1], -1).numpy()
+
+        # Fit the scalers to the flattened tensors
+        scaler_x.fit(x_flattened)
+        scaler_y.fit(y_flattened)
+        scaler_y_noise.fit(y_noise_flattened)
+        scaler_x_noise.fit(x_noise_flattened)
+
+        # Transform the flattened tensors
+        x_normalized_np = scaler_x.transform(x_flattened)
+        y_normalized_np = scaler_y.transform(y_flattened)
+        y_noise_normalized_np = scaler_y_noise.transform(y_noise_flattened)
+        x_noise_normalized_np = scaler_x_noise.transform(x_noise_flattened)
+        data_normalized_np = scaler_x.transform(data_flattened)
+
+        # Derive y_noised_normalized from y_normalized and y_noise_normalized
+        y_noised_normalized_np = y_normalized_np + y_noise_normalized_np
+
+        # Convert the normalized arrays back to tensors and reshape to original shape
+        x_normalized = torch.tensor(x_normalized_np, dtype=torch.float32).view(x.shape)
+        y_normalized = torch.tensor(y_normalized_np, dtype=torch.float32).view(y.shape)
+        y_noised_normalized = torch.tensor(y_noised_normalized_np, dtype=torch.float32).view(y_noised.shape)
+        y_noise_normalized = torch.tensor(y_noise_normalized_np, dtype=torch.float32).view(y_noise.shape)
+        x_noise_normalized = torch.tensor(x_noise_normalized_np, dtype=torch.float32).view(x_noise.shape)
+        data_normalized = torch.tensor(data_normalized_np, dtype=torch.float32).view(data.shape)
+
+        # Append to the dictionaries
+        X_train_normalized[game] = x_normalized
+        Y_train_normalized[game] = y_normalized
+        Y_train_noised_normalized[game] = y_noised_normalized
+        Y_noise_train_normalized[game] = y_noise_normalized
+        X_noise_train_normalized[game] = x_noise_normalized
+        Data_train_normalized[game] = data_normalized
+
+    # Normalize the test data
+    for game, x in X_test.items():
+        y = Y_test[game]
+        y_noised = Y_test_noised[game]
+        y_noise = Y_noise_test[game]
+        x_noise = X_noise_test[game]
+        data = Data_test[game]
+
+        # Flatten the tensors along the frame and player dimensions
+        x_flattened = x.view(x.shape[0] * x.shape[1], -1).numpy()
+        y_flattened = y.view(y.shape[0] * y.shape[1], -1).numpy()
+        y_noised_flattened = y_noised.view(y_noised.shape[0] * y_noised.shape[1], -1).numpy()
+        y_noise_flattened = y_noise.view(y_noise.shape[0] * y_noise.shape[1], -1).numpy()
+        x_noise_flattened = x_noise.view(x_noise.shape[0] * x_noise.shape[1], -1).numpy()
+        data_flattened = data.view(data.shape[0]*data.shape[1], -1).numpy()
+
+        # Transform the flattened tensors
+        x_normalized_np = scaler_x.transform(x_flattened)
+        y_normalized_np = scaler_y.transform(y_flattened)
+        y_noise_normalized_np = scaler_y_noise.transform(y_noise_flattened)
+        x_noise_normalized_np = scaler_x_noise.transform(x_noise_flattened)
+        data_normalized_np = scaler_x.transform(data_flattened)
+
+        # Derive y_noised_normalized from y_normalized and y_noise_normalized
+        y_noised_normalized_np = y_normalized_np + y_noise_normalized_np
+
+        # Convert the normalized arrays back to tensors and reshape to original shape
+        x_normalized = torch.tensor(x_normalized_np, dtype=torch.float32).view(x.shape)
+        y_normalized = torch.tensor(y_normalized_np, dtype=torch.float32).view(y.shape)
+        y_noised_normalized = torch.tensor(y_noised_normalized_np, dtype=torch.float32).view(y_noised.shape)
+        y_noise_normalized = torch.tensor(y_noise_normalized_np, dtype=torch.float32).view(y_noise.shape)
+        x_noise_normalized = torch.tensor(x_noise_normalized_np, dtype=torch.float32).view(x_noise.shape)
+        data_normalized = torch.tensor(data_normalized_np, dtype=torch.float32).view(data.shape)
+
+        # Append to the dictionaries
+        X_test_normalized[game] = x_normalized
+        Y_test_normalized[game] = y_normalized
+        Y_test_noised_normalized[game] = y_noised_normalized
+        Y_noise_test_normalized[game] = y_noise_normalized
+        X_noise_test_normalized[game] = x_noise_normalized
+        Data_test_normalized[game] = data_normalized
+
+    return X_train_normalized, Y_train_normalized, Y_train_noised_normalized, Y_noise_train_normalized, X_noise_train_normalized, X_test_normalized, Y_test_normalized, Y_test_noised_normalized, Y_noise_test_normalized, X_noise_test_normalized, Data_train_normalized, Data_test_normalized, scaler_x, scaler_y, scaler_y_noise, scaler_x_noise
+
+
 def normalization(X_train, Y_train, Y_train_noised, Y_noise_train, X_noise_train, X_test, Y_test, Y_test_noised, Y_noise_test, X_noise_test, Data_train, Data_test): 
+    # Initialize the dictionaries for the normalized data
+    X_train_normalized = {}
+    Y_train_normalized = {}
+    Y_train_noised_normalized = {}
+    Y_noise_train_normalized = {}
+    X_noise_train_normalized = {}
+    Data_train_normalized = {}
+    X_test_normalized = {}
+    Y_test_normalized = {}
+    Y_test_noised_normalized = {}
+    Y_noise_test_normalized = {}
+    X_noise_test_normalized = {}
+    Data_test_normalized = {}
+
+    # Initialize the scalers
+    scaler_x = StandardScaler()
+    scaler_y = StandardScaler()
+    scaler_y_noised = StandardScaler()
+    scaler_y_noise = StandardScaler()
+    scaler_x_noise = StandardScaler()
+    scaler_data = StandardScaler()
+
+    # Normalize the training data
+    for game, x in X_train.items():
+        y = Y_train[game]
+        y_noised = Y_train_noised[game]
+        y_noise = Y_noise_train[game]
+        x_noise = X_noise_train[game]
+        data = Data_train[game]
+
+        # Flatten the tensors along the frame and player dimensions
+        x_flattened = x.view(x.shape[0] * x.shape[1], -1).numpy()
+        y_flattened = y.view(y.shape[0] * y.shape[1], -1).numpy()
+        y_noised_flattened = y_noised.view(y_noised.shape[0] * y_noised.shape[1], -1).numpy()
+        y_noise_flattened = y_noise.view(y_noise.shape[0] * y_noise.shape[1], -1).numpy()
+        x_noise_flattened = x_noise.view(x_noise.shape[0] * x_noise.shape[1], -1).numpy()
+        data_flattened = data.view(data.shape[0]*data.shape[1], -1).numpy()
+
+        # Fit the scalers to the flattened tensors and transform
+        x_normalized_np = scaler_x.fit_transform(x_flattened)
+        y_normalized_np = scaler_y.fit_transform(y_flattened)
+        y_noised_normalized_np = scaler_y_noised.fit_transform(y_noised_flattened)
+        y_noise_normalized_np = scaler_y_noise.fit_transform(y_noise_flattened)
+        x_noise_normalized_np = scaler_x_noise.fit_transform(x_noise_flattened)
+        data_normalized_np = scaler_data.fit_transform(data_flattened)
+
+        #y_noised_normalized_np = y_normalized_np + y_noise_normalized_np
+
+        # Convert the normalized arrays back to tensors and reshape to original shape
+        x_normalized = torch.tensor(x_normalized_np, dtype=torch.float32).view(x.shape)
+        y_normalized = torch.tensor(y_normalized_np, dtype=torch.float32).view(y.shape)
+        y_noised_normalized = torch.tensor(y_noised_normalized_np, dtype=torch.float32).view(y_noised.shape)
+        y_noise_normalized = torch.tensor(y_noise_normalized_np, dtype=torch.float32).view(y_noise.shape)
+        x_noise_normalized = torch.tensor(x_noise_normalized_np, dtype=torch.float32).view(x_noise.shape)
+        data_normalized = torch.tensor(data_normalized_np, dtype=torch.float32).view(data.shape)
+
+        # Append to the dictionaries
+        X_train_normalized[game] = x_normalized
+        Y_train_normalized[game] = y_normalized
+        Y_train_noised_normalized[game] = y_noised_normalized
+        Y_noise_train_normalized[game] = y_noise_normalized
+        X_noise_train_normalized[game] = x_noise_normalized
+        Data_train_normalized[game] = data_normalized
+
+    # Normalize the test data
+    for game, x in X_test.items():
+        y = Y_test[game]
+        y_noised = Y_test_noised[game]
+        y_noise = Y_noise_test[game]
+        x_noise = X_noise_test[game]
+        data = Data_test[game]
+
+        # Flatten the tensors along the frame and player dimensions
+        x_flattened = x.view(x.shape[0] * x.shape[1], -1).numpy()
+        y_flattened = y.view(y.shape[0] * y.shape[1], -1).numpy()
+        y_noised_flattened = y_noised.view(y_noised.shape[0] * y_noised.shape[1], -1).numpy()
+        y_noise_flattened = y_noise.view(y_noise.shape[0] * y_noise.shape[1], -1).numpy()
+        x_noise_flattened = x_noise.view(x_noise.shape[0] * x_noise.shape[1], -1).numpy()
+        data_flattened = data.view(data.shape[0]*data.shape[1], -1).numpy()
+
+        # Fit the scalers to the flattened tensors and transform
+        x_normalized_np = scaler_x.fit_transform(x_flattened)
+        y_normalized_np = scaler_y.fit_transform(y_flattened)
+        y_noised_normalized_np = scaler_y_noised.fit_transform(y_noised_flattened)
+        y_noise_normalized_np = scaler_y_noise.fit_transform(y_noise_flattened)
+        x_noise_normalized_np = scaler_x_noise.fit_transform(x_noise_flattened)
+        data_normalized_np = scaler_data.fit_transform(data_flattened)
+
+        #y_noised_normalized_np = y_normalized_np + y_noise_normalized_np
+
+        # Convert the normalized arrays back to tensors and reshape to original shape
+        x_normalized = torch.tensor(x_normalized_np, dtype=torch.float32).view(x.shape)
+        y_normalized = torch.tensor(y_normalized_np, dtype=torch.float32).view(y.shape)
+        y_noised_normalized = torch.tensor(y_noised_normalized_np, dtype=torch.float32).view(y_noised.shape)
+        y_noise_normalized = torch.tensor(y_noise_normalized_np, dtype=torch.float32).view(y_noise.shape)
+        x_noise_normalized = torch.tensor(x_noise_normalized_np, dtype=torch.float32).view(x_noise.shape)
+        data_normalized = torch.tensor(data_normalized_np, dtype=torch.float32).view(data.shape)
+
+        # Append to the dictionaries
+        X_test_normalized[game] = x_normalized
+        Y_test_normalized[game] = y_normalized
+        Y_test_noised_normalized[game] = y_noised_normalized
+        Y_noise_test_normalized[game] = y_noise_normalized
+        X_noise_test_normalized[game] = x_noise_normalized
+        Data_test_normalized[game] = data_normalized
+    
+
+    return X_train_normalized, Y_train_normalized, Y_train_noised_normalized, Y_noise_train_normalized, X_noise_train_normalized, X_test_normalized, Y_test_normalized, Y_test_noised_normalized, Y_noise_test_normalized, X_noise_test_normalized, Data_train_normalized, Data_test_normalized, scaler_x, scaler_y, scaler_y_noised, scaler_y_noise, scaler_x_noise, scaler_data
+
+
+
+
+
+
+
+def normalization2(X_train, Y_train, Y_train_noised, Y_noise_train, X_noise_train, X_test, Y_test, Y_test_noised, Y_noise_test, X_noise_test, Data_train, Data_test): 
     # Initialize the dictionaries for the normalized data
     X_train_normalized = {}
     Y_train_normalized = {}
